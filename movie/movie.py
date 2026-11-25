@@ -82,6 +82,15 @@ def resolve_delete_movie(_, info, id):
     return movie
 
 
+schema = make_executable_schema(load_schema_from_path("movie.graphql"), query, mutation)
+
+
+@app.route("/graphql", methods=["POST"])
+def graphql_server():
+    success, result = graphql_sync(schema, request.get_json(), context_value=request, debug=app.debug)
+    return jsonify(result), 200 if success else 400
+    
+
 if __name__ == "__main__":
     print("Server running in port %s" % (PORT))
     app.run(host=HOST, port=PORT)
