@@ -3,6 +3,8 @@
 import json
 
 from flask import Flask, jsonify, make_response, request
+from pymongo import MongoClient
+from bson.json_util import dumps
 
 from werkzeug.exceptions import NotFound
 
@@ -10,20 +12,15 @@ app = Flask(__name__)
 
 PORT = 3203
 HOST = '0.0.0.0'
+client = MongoClient('mongodb://root:example@mongo:27017/')
+db=client['user_database']
+collection=db['users']
+
 
 with open('{}/databases/users.json'.format("."), "r", encoding="utf-8") as jsf:
     users = json.load(jsf)["users"]
 
-def write(users_json):
-    """overwrite the users.json database
-
-    Args:
-        users_json (json): The list of users to write to the database
-    """
-    with open('{}/databases/users.json'.format("."), 'w', encoding="utf-8") as f:
-        full = {}
-        full['users']=users_json
-        json.dump(full, f, ensure_ascii=False, indent=2)
+collection.insert_many(users)
 
 @app.route("/", methods=['GET'])
 def get_users():
@@ -32,7 +29,7 @@ def get_users():
     Returns:
         Json: A list of all users data
     """
-    return jsonify({"users": users})
+    return make_response(dumps(collection.find()), 200)
 
 @app.route("/<user_id>", methods=['GET'])
 def get_user(user_id):
@@ -47,10 +44,10 @@ def get_user(user_id):
     Returns:
         dict: The user data if found
     """
-    user = next((user for user in users if user["id"] == user_id), None)
+    user = collection.find_one({"id": user_id})
     if user is None:
         raise NotFound(description="User not found")
-    return jsonify(user)
+    return make_response(dumps(user), 200)
 
 @app.route("/", methods=['POST'])
 def create_user():
@@ -62,12 +59,7 @@ def create_user():
     data = request.get_json()
     if not data or "id" not in data or "name" not in data:
         return make_response(jsonify({"error": "Invalid user data"}), 400)
-
-    if any(user["id"] == data["id"] for user in users):
-        return make_response(jsonify({"error": "User with this ID already exists"}), 400)
-
-    users.append(data)
-    write(users)
+    collection.insert_one(data)
     return make_response(jsonify({"message": "User created successfully"}), 201)
 
 @app.route("/<user_id>", methods=['PUT'])
@@ -83,15 +75,12 @@ def update_user(user_id):
     Returns:
         Json: Validation message and status code
     """
-    user = next((user for user in users if user["id"] == user_id), None)
-    if user is None:
-        raise NotFound(description="User not found")
     data = request.get_json()
-    if not data or "id" not in data or "name" not in data:
+    if not data or "name" not in data:
         return make_response(jsonify({"error": "Invalid user data"}), 400)
-    users.remove(user)
-    users.append(data)
-    write(users)
+    result = collection.update_one({"id": user_id}, {"$set": {"name": data["name"]}})
+    if result.matched_count == 0:
+        raise NotFound(description="User not found")
     return make_response(jsonify({"message": "User updated successfully"}), 200)
 
 @app.route("/<user_id>", methods=['DELETE'])
@@ -107,11 +96,9 @@ def delete_user(user_id):
     Returns:
         Json: Validation message and status code
     """
-    user = next((user for user in users if user["id"] == user_id), None)
-    if user is None:
+    result = collection.delete_one({"id": user_id})
+    if result.deleted_count == 0:
         raise NotFound(description="User not found")
-    users.remove(user)
-    write(users)
     return make_response(jsonify({"message": "User deleted successfully"}), 200)
 
 if __name__ == "__main__":
