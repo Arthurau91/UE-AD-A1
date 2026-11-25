@@ -146,6 +146,29 @@ def check_schedule(date: str, movies: list) -> None:
             )
 
 
+# Fetch a movie from the GraphQL Movie service; returns None if it does not exist
+def fetch_movie(movieid: str):
+    query = """
+    query($id: String!) {
+        movie_with_id(id: $id) { id title rating director }
+    }
+    """
+    try:
+        r = requests.post(
+            f"{MOVIE_URL}/graphql",
+            json={"query": query, "variables": {"id": movieid}},
+            timeout=TIMEOUT,
+        )
+        r.raise_for_status()
+        body = r.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise UpstreamServiceError() from exc
+
+    if body.get("errors"):
+        raise UpstreamServiceError()
+    return (body.get("data") or {}).get("movie_with_id")
+
+
 @app.route("/", methods=['GET'])
 def home():
     return "<h1 style='color:blue'>Welcome to the Booking service!</h1>"
@@ -179,11 +202,8 @@ def get_booking_details(userid: str, date: str):
 
     movies = []
     for movieid in booking["movies"]:
-        try:
-            r = requests.get(f"{MOVIE_URL}/movies/{movieid}", timeout=TIMEOUT)
-        except requests.RequestException as exc:
-            raise UpstreamServiceError() from exc
-        movies.append(r.json() if r.status_code == 200 else {"id": movieid})
+        movie = fetch_movie(movieid)
+        movies.append(movie if movie else {"id": movieid})
 
     return jsonify({"userid": userid, "date": date, "movies": movies}), HTTPStatus.OK
 
