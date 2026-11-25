@@ -1,16 +1,9 @@
-from http import HTTPStatus
-from json import load, dump, loads
-from typing import Any, Type, TypeVar
+from json import load, dump
 from uuid import uuid4
 
+from ariadne import QueryType, MutationType, make_executable_schema, graphql_sync, load_schema_from_path
 from flask import Flask, jsonify, request
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    ValidationError,
-)
-from werkzeug.exceptions import HTTPException, NotFound, UnprocessableEntity
+from graphql import GraphQLError
 
 app = Flask(__name__)
 
@@ -27,97 +20,77 @@ def write(movies):
         dump({"movies": movies}, f)
 
 
-T = TypeVar("T", bound=BaseModel)
+def validate(title=None, rating=None, director=None):
+    if title is not None and len(title) > 100:
+        raise GraphQLError("title must be at most 100 characters")
+    if director is not None and len(director) > 100:
+        raise GraphQLError("director must be at most 100 characters")
+    if rating is not None and not 0 <= rating <= 10:
+        raise GraphQLError("rating must be between 0 and 10")
 
 
-class MovieInput(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    title: str = Field(max_length=100)
-    rating: int = Field(ge=0, le=10)
-    director: str = Field(max_length=100)
+def find_movie(id):
+    return next((m for m in movies if str(m["id"]) == str(id)), None)
 
 
-class MovieResponse(BaseModel):
-    id: str
-    title: str
-    rating: int
-    director: str
+query = QueryType()
+mutation = MutationType()
 
 
-def validate_payload(model: Type[T], payload: Any) -> T:
-    try:
-        return model.model_validate(payload)
-    except ValidationError as exc:
-        raise UnprocessableEntity(description=loads(exc.json())) from exc
+@query.field("movies")
+def resolve_movies(_, info):
+    return movies
 
 
-class MovieNotFoundError(NotFound):
-    pass
+@query.field("movie_with_id")
+def resolve_movie_with_id(_, info, id):
+    return find_movie(id)
 
 
-@app.errorhandler(MovieNotFoundError)
-def handle_movie_not_found(e: MovieNotFoundError):
-    return jsonify(error="Movie does not exist"), 404
+@query.field("movie_with_title")
+def resolve_movie_with_title(_, info, title):
+    return next((m for m in movies if m["title"] == title), None)
 
 
-@app.errorhandler(HTTPException)
-def handle_http_exception(e: HTTPException):
-    return jsonify(error=e.description), e.code
-
-
-def find_movie(movieid: str) -> int:
-    for i, movie in enumerate(movies):
-        if str(movie["id"]) == str(movieid):
-            return movies[i]
-    raise MovieNotFoundError()
-
-def find_movie_index(movieid: str) -> int:
-    for i, movie in enumerate(movies):
-        if str(movie["id"]) == str(movieid):
-            return i
-    raise MovieNotFoundError()
-
-
-@app.route("/movies", methods=["GET"])
-def get_movies():
-    return jsonify(movies), HTTPStatus.OK
-
-
-@app.route("/movies/<movieid>", methods=["GET"])
-def get_movie_byid(movieid: str):
-    return jsonify(find_movie(movieid)), HTTPStatus.OK
-
-
-@app.route("/movies", methods=["POST"])
-def add_movie():
-    movie = validate_payload(MovieInput, request.get_json())
-    movies.append({"id": str(uuid4()), **movie.model_dump()})
+@mutation.field("add_movie")
+def resolve_add_movie(_, info, title, rating, director):
+    validate(title, rating, director)
+    movie = {"id": str(uuid4()), "title": title, "rating": rating, "director": director}
+    movies.append(movie)
     write(movies)
-
-    movie = movies[-1]
-    return jsonify(movie), HTTPStatus.CREATED
+    return movie
 
 
-@app.route("/movies/<movieid>", methods=["PUT"])
-def update_movie(movieid: str):
-    movie = validate_payload(MovieInput, request.get_json())
-    i = find_movie_index(movieid)
-    movies[i] = {"id": movies[i]["id"], **movie.model_dump()}
+@mutation.field("update_movie")
+def resolve_update_movie(_, info, id, **fields):
+    validate(**fields)
+    movie = find_movie(id)
+    if movie is None:
+        raise GraphQLError("Movie does not exist")
+    movie.update({k: v for k, v in fields.items() if v is not None})
     write(movies)
+    return movie
 
-    return jsonify(movies[i]), HTTPStatus.OK
 
-
-@app.route("/movies/<movieid>", methods=["DELETE"])
-def delete_movie(movieid: str):
-    i = find_movie_index(movieid)
-    movies.pop(i)
+@mutation.field("delete_movie")
+def resolve_delete_movie(_, info, id):
+    movie = find_movie(id)
+    if movie is None:
+        raise GraphQLError("Movie does not exist")
+    movies.remove(movie)
     write(movies)
-    return "", HTTPStatus.NO_CONTENT
+    return movie
 
+
+schema = make_executable_schema(load_schema_from_path("movie.graphql"), query, mutation)
+
+
+@app.route("/graphql", methods=["POST"])
+def graphql_server():
+    success, result = graphql_sync(schema, request.get_json(), context_value=request, debug=app.debug)
+    return jsonify(result), 200 if success else 400
+    
 
 if __name__ == "__main__":
-    #p = sys.argv[1]
-    print("Server running in port %s"%(PORT))
+    print("Server running in port %s" % (PORT))
     app.run(host=HOST, port=PORT)

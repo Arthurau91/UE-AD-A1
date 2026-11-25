@@ -1,0 +1,32 @@
+type Query {
+    user_bookings(userid: String!): UserBookings
+    booking_details(userid: String!, date: String!): BookingDetails
+}
+
+type Mutation {
+    add_booking(userid: String!, date: String!, movies: [String!]!): UserBookings!
+    delete_booking(userid: String!, date: String!): UserBookings
+}
+
+type DateBooking {
+    date: String!
+    movies: [String!]!
+}
+
+type UserBookings {
+    userid: String!
+    dates: [DateBooking!]!
+}
+
+type MovieDetails {
+    id: String!
+    title: String
+    rating: Float
+    director: String
+}
+
+type BookingDetails {
+    userid: String!
+    date: String!
+    movies: [MovieDetails!]!
+}
