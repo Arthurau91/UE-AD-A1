@@ -1,25 +1,14 @@
 # This module implements a booking service that allows users to create,
 # retrieve, and delete bookings for movies on specific dates.
 
-from http import HTTPStatus
+import re
 from json import load, dump
 from os import environ
-from typing import TypeVar
 
 import requests
-from flask import Flask, jsonify
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-)
-from werkzeug.exceptions import (
-    BadGateway,
-    Conflict,
-    HTTPException,
-    NotFound,
-    UnprocessableEntity,
-)
+from ariadne import QueryType, MutationType, make_executable_schema, graphql_sync, load_schema_from_path
+from flask import Flask, jsonify, request
+from graphql import GraphQLError
 
 app = Flask(__name__)
 
@@ -30,6 +19,7 @@ DB_PATH = "./databases/bookings.json"
 SCHEDULE_URL = environ.get("SCHEDULE_URL", "http://localhost:3202")
 MOVIE_URL = environ.get("MOVIE_URL", "http://localhost:3200")
 TIMEOUT = 5
+DATE_PATTERN = re.compile(r"^\d{8}$")
 
 with open(DB_PATH, 'r') as jsf:
     bookings = load(jsf)["bookings"]
@@ -40,110 +30,30 @@ def write(bookings):
         dump({"bookings": bookings}, f)
 
 
-T = TypeVar("T", bound=BaseModel)
-
-# Input model for creating a new booking
-class BookingInput(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    date: str = Field(pattern=r"^\d{8}$")
-    movies: list[str] = Field(min_length=1)
-
-# Response model for returning booking details
-class DateBooking(BaseModel):
-    date: str
-    movies: list[str]
-
-# Response model for returning user bookings
-class BookingResponse(BaseModel):
-    userid: str
-    dates: list[DateBooking]
+def find_user(userid):
+    return next((b for b in bookings if str(b["userid"]) == str(userid)), None)
 
 
-class BookingNotFoundError(NotFound):
-    pass
+def find_date(entry, date):
+    return next((d for d in entry["dates"] if str(d["date"]) == str(date)), None)
 
 
-class BookingDateNotFoundError(NotFound):
-    pass
-
-
-class BookingAlreadyExistsError(Conflict):
-    pass
-
-
-class UpstreamServiceError(BadGateway):
-    pass
-
-
-# Error handlers for custom exceptions
-
-@app.errorhandler(BookingNotFoundError)
-def handle_booking_not_found(e: BookingNotFoundError):
-    return jsonify(error="Booking does not exist"), 404
-
-
-@app.errorhandler(BookingDateNotFoundError)
-def handle_booking_date_not_found(e: BookingDateNotFoundError):
-    return jsonify(error="No booking for this date"), 404
-
-
-@app.errorhandler(BookingAlreadyExistsError)
-def handle_booking_exists(e: BookingAlreadyExistsError):
-    return jsonify(error="Booking already exists for this date"), 409
-
-
-@app.errorhandler(UpstreamServiceError)
-def handle_upstream_error(e: UpstreamServiceError):
-    return jsonify(error="An upstream service is unavailable"), 502
-
-
-@app.errorhandler(HTTPException)
-def handle_http_exception(e: HTTPException):
-    return jsonify(error=e.description), e.code
-
-
-# Helper functions for finding and managing bookings
-def find_user(userid: str) -> dict:
-    for entry in bookings:
-        if str(entry["userid"]) == str(userid):
-            return entry
-    raise BookingNotFoundError()
-
-# Helper function to get or create a user booking entry
-def get_or_create_user(userid: str) -> dict:
-    for entry in bookings:
-        if str(entry["userid"]) == str(userid):
-            return entry
-    entry = {"userid": userid, "dates": []}
-    bookings.append(entry)
-    return entry
-
-# Helper function to find a specific date booking for a user
-def find_date(entry: dict, date: str) -> dict:
-    for d in entry["dates"]:
-        if str(d["date"]) == str(date):
-            return d
-    raise BookingDateNotFoundError()
-
-# Helper function to validate incoming JSON payloads against Pydantic models
-def check_schedule(date: str, movies: list) -> None:
+# Raise if the date is not scheduled or a movie is not shown on that date
+def check_schedule(date, movies):
     try:
         r = requests.get(f"{SCHEDULE_URL}/schedule/{date}", timeout=TIMEOUT)
     except requests.RequestException as exc:
-        raise UpstreamServiceError() from exc
+        raise GraphQLError("Schedule service is unavailable") from exc
 
     if r.status_code == 404:
-        raise UnprocessableEntity(description="Date is not scheduled")
+        raise GraphQLError("Date is not scheduled")
     if r.status_code != 200:
-        raise UpstreamServiceError()
+        raise GraphQLError("Schedule service is unavailable")
 
     scheduled = r.json().get("movies", [])
     for movie in movies:
         if movie not in scheduled:
-            raise UnprocessableEntity(
-                description=f"Movie {movie} is not scheduled on {date}"
-            )
+            raise GraphQLError(f"Movie {movie} is not scheduled on {date}")
 
 
 # Fetch a movie from the GraphQL Movie service; returns None if it does not exist
@@ -162,60 +72,72 @@ def fetch_movie(movieid: str):
         r.raise_for_status()
         body = r.json()
     except (requests.RequestException, ValueError) as exc:
-        raise UpstreamServiceError() from exc
+        raise GraphQLError("Movie service is unavailable") from exc
 
     if body.get("errors"):
-        raise UpstreamServiceError()
+        raise GraphQLError("Movie service is unavailable")
     return (body.get("data") or {}).get("movie_with_id")
 
 
-@app.route("/", methods=['GET'])
-def home():
-    return "<h1 style='color:blue'>Welcome to the Booking service!</h1>"
+query = QueryType()
+mutation = MutationType()
 
 
-# Route handlers for booking operations
-@app.route("/bookings/<userid>", methods=["GET"])
-def get_user_bookings(userid: str):
-    return jsonify(find_user(userid)), HTTPStatus.OK
+@query.field("user_bookings")
+def resolve_user_bookings(_, info, userid):
+    return find_user(userid)
 
 
-# Route handler for adding a new booking for a user
-@app.route("/bookings/<userid>", methods=["POST"])
-def add_booking(userid: str):
-    check_schedule(payload.date, payload.movies)
+@query.field("booking_details")
+def resolve_booking_details(_, info, userid, date):
+    entry = find_user(userid)
+    booking = find_date(entry, date) if entry else None
+    if booking is None:
+        return None
+    movies = [fetch_movie(mid) or {"id": mid} for mid in booking["movies"]]
+    return {"userid": userid, "date": date, "movies": movies}
 
-    entry = get_or_create_user(userid)
-    if any(str(d["date"]) == payload.date for d in entry["dates"]):
-        raise BookingAlreadyExistsError()
 
-    entry["dates"].append(payload.model_dump())
+@mutation.field("add_booking")
+def resolve_add_booking(_, info, userid, date, movies):
+    if not DATE_PATTERN.match(date):
+        raise GraphQLError("date must be formatted as YYYYMMDD")
+    if not movies:
+        raise GraphQLError("at least one movie is required")
+
+    check_schedule(date, movies)
+
+    entry = find_user(userid)
+    if entry is not None and find_date(entry, date) is not None:
+        raise GraphQLError("Booking already exists for this date")
+    if entry is None:
+        entry = {"userid": userid, "dates": []}
+        bookings.append(entry)
+
+    entry["dates"].append({"date": date, "movies": movies})
     write(bookings)
-    return jsonify(entry), HTTPStatus.CREATED
+    return entry
 
 
-# Route handler for getting detailed booking information for a specific date
-@app.route("/bookings/<userid>/<date>", methods=["GET"])
-def get_booking_details(userid: str, date: str):
+@mutation.field("delete_booking")
+def resolve_delete_booking(_, info, userid, date):
     entry = find_user(userid)
-    booking = find_date(entry, date)
-
-    movies = []
-    for movieid in booking["movies"]:
-        movie = fetch_movie(movieid)
-        movies.append(movie if movie else {"id": movieid})
-
-    return jsonify({"userid": userid, "date": date, "movies": movies}), HTTPStatus.OK
-
-
-# Route handler for deleting a booking for a specific date
-@app.route("/bookings/<userid>/<date>", methods=["DELETE"])
-def delete_booking(userid: str, date: str):
-    entry = find_user(userid)
-    find_date(entry, date)
+    if entry is None:
+        raise GraphQLError("Booking does not exist")
+    if find_date(entry, date) is None:
+        raise GraphQLError("No booking for this date")
     entry["dates"] = [d for d in entry["dates"] if str(d["date"]) != str(date)]
     write(bookings)
-    return "", HTTPStatus.NO_CONTENT
+    return entry
+
+
+schema = make_executable_schema(load_schema_from_path("booking.graphql"), query, mutation)
+
+
+@app.route("/graphql", methods=["POST"])
+def graphql_server():
+    success, result = graphql_sync(schema, request.get_json(), context_value=request, debug=app.debug)
+    return jsonify(result), 200 if success else 400
 
 
 if __name__ == "__main__":
