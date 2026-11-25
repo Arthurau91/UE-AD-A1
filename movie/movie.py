@@ -2,7 +2,7 @@ from json import load, dump
 from uuid import uuid4
 
 from ariadne import QueryType, MutationType, make_executable_schema, graphql_sync, load_schema_from_path
-from flask import Flask
+from flask import Flask, jsonify, request
 from graphql import GraphQLError
 
 app = Flask(__name__)
