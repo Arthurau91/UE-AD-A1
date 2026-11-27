@@ -16,3 +16,5 @@ graphql-core==3.2.12
 idna==3.20
 starlette==1.6.0
 typing_extensions==4.16.0
+dnspython==2.8.0
+pymongo==4.15.3
