@@ -1,0 +1,125 @@
+openapi: 3.0.3
+info:
+  title: Booking API (GraphQL)
+  version: 2.0.0
+  description: |
+    GraphQL API for cinema bookings, stored in the service's JSON file. A GraphQL request is a plain
+    HTTP `POST /graphql` with a JSON body `{"query": "...", "variables": {...}}`. The schema is in
+    `booking/booking.graphql`.
+
+    **Authentication:** every operation takes an `auth_token` argument, the JWT returned by the User
+    service (`POST /login`, HS256, 1 hour). The user is the token's `sub` claim, so there is no user id
+    argument. Admin-only operations need the `admin` claim.
+
+    **Queries**
+    - `user_bookings(auth_token): UserBookings` (the caller's bookings, `null` if none)
+    - `booking_details(auth_token, date): BookingDetails` (movies enriched from the Movie service; unknown
+      movies only keep their `id`; `null` if no booking on that date)
+    - `all_bookings(auth_token): [UserBookings!]!` (**admin only**)
+
+    **Mutations**
+    - `add_booking(auth_token, date, movies): UserBookings!` (date `YYYYMMDD`, checked against the Schedule service)
+    - `delete_booking(auth_token, date): UserBookings` (returns the caller's remaining bookings)
+
+    **Errors** (in the `errors` array, HTTP 200): `Invalid or expired auth_token`, `Admin rights required`,
+    `date must be formatted as YYYYMMDD`, `at least one movie is required`, `Date is not scheduled`,
+    `Movie <id> is not scheduled on <date>`, `Booking already exists for this date`,
+    `Booking does not exist`, `No booking for this date`, `Schedule service is unavailable`,
+    `Movie service is unavailable`. A malformed query returns HTTP 400.
+servers:
+  - url: http://localhost:3201/
+tags:
+  - name: GraphQL
+paths:
+  /graphql:
+    post:
+      tags: [GraphQL]
+      operationId: bookingGraphql
+      summary: Execute a GraphQL query or mutation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GraphQLRequest"
+            examples:
+              myBookings:
+                summary: My bookings
+                value:
+                  query: "query($t: String!) { user_bookings(auth_token: $t) { userid dates { date movies } } }"
+                  variables:
+                    t: "<auth_token>"
+              details:
+                summary: Booking details
+                value:
+                  query: "query($t: String!, $d: String!) { booking_details(auth_token: $t, date: $d) { date movies { id title director } } }"
+                  variables:
+                    t: "<auth_token>"
+                    d: "20151201"
+              addBooking:
+                summary: Add a booking
+                value:
+                  query: "mutation($t: String!, $d: String!, $m: [String!]!) { add_booking(auth_token: $t, date: $d, movies: $m) { userid dates { date movies } } }"
+                  variables:
+                    t: "<auth_token>"
+                    d: "20151201"
+                    m: ["a8034f44-aee4-44cf-b32c-74cf452aaaae"]
+      responses:
+        "200":
+          description: Result with `data` and/or `errors`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GraphQLResponse"
+        "400":
+          description: The query is syntactically or structurally invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GraphQLResponse"
+components:
+  schemas:
+    GraphQLRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+        variables:
+          type: object
+          additionalProperties: true
+    GraphQLResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          nullable: true
+          additionalProperties: true
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              message:
+                type: string
+    DateBooking:
+      type: object
+      description: GraphQL type `DateBooking`.
+      properties:
+        date:
+          type: string
+          pattern: '^\d{8}$'
+        movies:
+          type: array
+          items:
+            type: string
+    UserBookings:
+      type: object
+      description: GraphQL type `UserBookings`.
+      properties:
+        userid:
+          type: string
+        dates:
+          type: array
+          items:
+            $ref: "#/components/schemas/DateBooking"

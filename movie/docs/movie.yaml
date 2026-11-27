@@ -1,0 +1,108 @@
+openapi: 3.0.3
+info:
+  title: Movie API (GraphQL)
+  version: 2.0.0
+  description: |
+    GraphQL API for the cinema movie catalogue, stored in the service's JSON file.
+    A GraphQL request is a plain HTTP `POST /graphql` with a JSON body
+    `{"query": "...", "variables": {...}}`. The schema is in `movie/movie.graphql`.
+
+    **Queries**
+    - `movies: [Movie!]!`
+    - `movie_with_id(id: String!): Movie` (`null` if unknown)
+    - `movie_with_title(title: String!): Movie` (exact match, `null` if unknown)
+
+    **Mutations**
+    - `add_movie(title: String!, rating: Float!, director: String!): Movie!`
+    - `update_movie(id: String!, title: String, rating: Float, director: String): Movie` (omitted fields unchanged)
+    - `delete_movie(id: String!): Movie` (returns the deleted movie)
+
+    **Errors** (in the `errors` array, HTTP 200): `title must be at most 100 characters`,
+    `director must be at most 100 characters`, `rating must be between 0 and 10`,
+    `Movie does not exist`. A malformed or schema-invalid query returns HTTP 400.
+servers:
+  - url: http://localhost:3200/
+tags:
+  - name: GraphQL
+paths:
+  /graphql:
+    post:
+      tags: [GraphQL]
+      operationId: movieGraphql
+      summary: Execute a GraphQL query or mutation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GraphQLRequest"
+            examples:
+              listMovies:
+                summary: List movies
+                value:
+                  query: "{ movies { id title rating director } }"
+              movieById:
+                summary: Movie by id
+                value:
+                  query: "query($id: String!) { movie_with_id(id: $id) { title rating } }"
+                  variables:
+                    id: a8034f44-aee4-44cf-b32c-74cf452aaaae
+              addMovie:
+                summary: Add a movie
+                value:
+                  query: "mutation { add_movie(title: \"Creed\", rating: 7.6, director: \"Ryan Coogler\") { id } }"
+      responses:
+        "200":
+          description: Result with `data` and/or `errors`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GraphQLResponse"
+        "400":
+          description: The query is syntactically or structurally invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GraphQLResponse"
+components:
+  schemas:
+    GraphQLRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+        variables:
+          type: object
+          additionalProperties: true
+    GraphQLResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          nullable: true
+          additionalProperties: true
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              message:
+                type: string
+    Movie:
+      type: object
+      description: GraphQL type `Movie`.
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          maxLength: 100
+        rating:
+          type: number
+          minimum: 0
+          maximum: 10
+        director:
+          type: string
+          maxLength: 100
