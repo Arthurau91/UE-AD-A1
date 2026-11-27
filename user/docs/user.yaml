@@ -1,0 +1,229 @@
+openapi: 3.0.3
+info:
+  title: User API
+  version: 1.0.0
+  description: |
+    REST API for managing users (stored in MongoDB, seeded from `user/databases/users.json`) and for
+    issuing JWTs used by the Booking service.
+
+    `POST /login` returns an HS256 token (signed with `JWT_SECRET`, valid 1 hour) with claims `sub`
+    (user id), `admin` (boolean), `iat` and `exp`. There is no password: any existing user id can log in.
+
+    Setting a `role` (`user` or `admin`) requires an `Authorization: Bearer <token>` header from an
+    admin, and an admin cannot change their own role.
+servers:
+  - url: http://localhost:3203/
+tags:
+  - name: Users
+  - name: Auth
+paths:
+  /:
+    get:
+      tags: [Users]
+      operationId: listUsers
+      summary: List users
+      responses:
+        "200":
+          description: JSON array of all users.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/User"
+    post:
+      tags: [Users]
+      operationId: createUser
+      summary: Create a user
+      security:
+        - bearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserInput"
+      responses:
+        "201":
+          description: User created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+        "400":
+          description: Missing `id`/`name`, invalid role, or the id already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: A `role` was provided without an admin token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /{user_id}:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    get:
+      tags: [Users]
+      operationId: getUser
+      summary: Get a user
+      responses:
+        "200":
+          description: The user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    put:
+      tags: [Users]
+      operationId: updateUser
+      summary: Update a user
+      security:
+        - bearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserInput"
+      responses:
+        "200":
+          description: User updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+        "400":
+          description: Missing `id`/`name` or invalid role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Changing a role needs an admin token, and admins cannot change their own role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags: [Users]
+      operationId: deleteUser
+      summary: Delete a user
+      responses:
+        "200":
+          description: User deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /login:
+    post:
+      tags: [Auth]
+      operationId: login
+      summary: Get a JWT for an existing user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id:
+                  type: string
+                  example: chris_rivers
+      responses:
+        "200":
+          description: Token issued.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  auth_token:
+                    type: string
+        "400":
+          description: The `id` field is missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unknown user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    UserId:
+      name: user_id
+      in: path
+      required: true
+      schema:
+        type: string
+      example: chris_rivers
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        last_active:
+          type: integer
+        role:
+          type: string
+          enum: [user, admin]
+    UserInput:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        last_active:
+          type: integer
+        role:
+          type: string
+          enum: [user, admin]
+          description: Requires an admin token.
+    Message:
+      type: object
+      properties:
+        message:
+          type: string
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
