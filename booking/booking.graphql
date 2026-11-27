@@ -1,11 +1,12 @@
 type Query {
-    user_bookings(userid: String!): UserBookings
-    booking_details(userid: String!, date: String!): BookingDetails
+    user_bookings(auth_token: String!): UserBookings
+    booking_details(auth_token: String!, date: String!): BookingDetails
+    all_bookings(auth_token: String!): [UserBookings!]!
 }
 
 type Mutation {
-    add_booking(userid: String!, date: String!, movies: [String!]!): UserBookings!
-    delete_booking(userid: String!, date: String!): UserBookings
+    add_booking(auth_token: String!, date: String!, movies: [String!]!): UserBookings!
+    delete_booking(auth_token: String!, date: String!): UserBookings
 }
 
 type DateBooking {
