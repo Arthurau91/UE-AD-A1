@@ -4,11 +4,17 @@
 import re
 from json import load, dump
 from os import environ
+from pathlib import Path
 
+import jwt
 import requests
+from dotenv import load_dotenv
 from ariadne import QueryType, MutationType, make_executable_schema, graphql_sync, load_schema_from_path
 from flask import Flask, jsonify, request
 from graphql import GraphQLError
+
+# Local runs: read the shared .env at the repo root (Docker injects it via env_file)
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 app = Flask(__name__)
 
@@ -18,6 +24,8 @@ DB_PATH = "./databases/bookings.json"
 # URLS for the schedule and movie services, can be overridden by environment variables
 SCHEDULE_URL = environ.get("SCHEDULE_URL", "http://localhost:3202")
 MOVIE_URL = environ.get("MOVIE_URL", "http://localhost:3200")
+# Shared with the user service, which issues the tokens
+JWT_SECRET = environ["JWT_SECRET"]
 TIMEOUT = 5
 DATE_PATTERN = re.compile(r"^\d{8}$")
 
@@ -79,17 +87,40 @@ def fetch_movie(movieid: str):
     return (body.get("data") or {}).get("movie_with_id")
 
 
+def decode_token(auth_token):
+    try:
+        return jwt.decode(auth_token, JWT_SECRET, algorithms=["HS256"])
+    except jwt.PyJWTError as exc:
+        raise GraphQLError("Invalid or expired auth_token") from exc
+
+
+def current_userid(auth_token):
+    return decode_token(auth_token)["sub"]
+
+
+def require_admin(auth_token):
+    if not decode_token(auth_token).get("admin"):
+        raise GraphQLError("Admin rights required")
+
+
 query = QueryType()
 mutation = MutationType()
 
 
 @query.field("user_bookings")
-def resolve_user_bookings(_, info, userid):
-    return find_user(userid)
+def resolve_user_bookings(_, info, auth_token):
+    return find_user(current_userid(auth_token))
+
+
+@query.field("all_bookings")
+def resolve_all_bookings(_, info, auth_token):
+    require_admin(auth_token)
+    return bookings
 
 
 @query.field("booking_details")
-def resolve_booking_details(_, info, userid, date):
+def resolve_booking_details(_, info, auth_token, date):
+    userid = current_userid(auth_token)
     entry = find_user(userid)
     booking = find_date(entry, date) if entry else None
     if booking is None:
@@ -99,7 +130,8 @@ def resolve_booking_details(_, info, userid, date):
 
 
 @mutation.field("add_booking")
-def resolve_add_booking(_, info, userid, date, movies):
+def resolve_add_booking(_, info, auth_token, date, movies):
+    userid = current_userid(auth_token)
     if not DATE_PATTERN.match(date):
         raise GraphQLError("date must be formatted as YYYYMMDD")
     if not movies:
@@ -120,7 +152,8 @@ def resolve_add_booking(_, info, userid, date, movies):
 
 
 @mutation.field("delete_booking")
-def resolve_delete_booking(_, info, userid, date):
+def resolve_delete_booking(_, info, auth_token, date):
+    userid = current_userid(auth_token)
     entry = find_user(userid)
     if entry is None:
         raise GraphQLError("Booking does not exist")
